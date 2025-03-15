@@ -2,65 +2,24 @@
 #include <stdlib.h>
 #include <time.h>
 #include <pthread.h>
-#include <string.h>
 
 #define BIN_CAPACITY 10
-#define ITEM_COUNT 500
-#define NUM_THREADS 4
+#define ITEM_COUNT 10
+#define NUM_THREADS 2 
 
 typedef struct {
     int thread_id;
     int start_index;
-    int size;
+    int end_index;
     int capacity;
-    int bins_used;
+    int* items;
+    int* local_bins_used;
 } ThreadData;
 
 static int total_bins = 0;
 pthread_mutex_t bin_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void* bestFitThread(void* arg);
-void createData(int size, int capacity);
-void finalBestFit(int capacity);
-void writeRemainingItems(int thread_id, int* remaining_items, int remaining_count);
-
-int main() {
-    pthread_t threads[NUM_THREADS];
-    ThreadData thread_data[NUM_THREADS];
-    
-    createData(ITEM_COUNT, BIN_CAPACITY);
-    
-    int items_per_thread = ITEM_COUNT / NUM_THREADS;
-    
-    // Create and start threads
-    for (int i = 0; i < NUM_THREADS; i++) {
-        thread_data[i].thread_id = i;
-        thread_data[i].start_index = i * items_per_thread;
-        thread_data[i].size = (i == NUM_THREADS - 1) ? (ITEM_COUNT - i * items_per_thread) : items_per_thread;
-        thread_data[i].capacity = BIN_CAPACITY;
-        thread_data[i].bins_used = 0;
-        
-        if (pthread_create(&threads[i], NULL, bestFitThread, (void*)&thread_data[i]) != 0) {
-            perror("Failed to create thread");
-            return 1;
-        }
-    }
-    
-    // Wait for all threads to complete
-    for (int i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
-    }
-    
-    // Process remaining items
-    finalBestFit(BIN_CAPACITY);
-    
-    printf("Number of total_bins required in Multi-threaded Best Fit: %d\n", total_bins);
-    
-    pthread_mutex_destroy(&bin_mutex);
-    return 0;
-}
-
- void createData(int size, int capacity) {
+void createData(int size, int capacity) {
     FILE* file;
     file = fopen("data.txt", "w+");
     if (file == NULL) {
@@ -73,187 +32,127 @@ int main() {
         fprintf(file, "%d\n", rand() % capacity + 1);
     }
     fclose(file);
-} 
+}
 
 void* bestFitThread(void* arg) {
     ThreadData* data = (ThreadData*)arg;
-    int bin_capacity[data->size];
+    int size = data->end_index - data->start_index;
+    
+    // Create bins and track their remaining capacity
+    int* bin_capacity = calloc(size, sizeof(int));
+    for (int i = 0; i < size; i++) {
+        bin_capacity[i] = data->capacity;  // Initialize all bins to full capacity
+    }
+    
     int used_bins = 0;
-    int* remaining_items = malloc(data->size * sizeof(int));
-    int remaining_count = 0;
     
-    FILE* file;
-    file = fopen("data.txt", "r");
-    if (file == NULL) {
-        perror("Error opening data file");
-        pthread_exit(NULL);
-    }
-    
-    int current_line = 0;
-    // Skip to start index
-    int temp;
-    while (current_line < data->start_index && fscanf(file, "%d", &temp) == 1) {
-        current_line++;
-    }
-    
-    for (int i = 0; i < data->size; i++) {
-        // Read current data from the file
-        int current_data;
-        if (fscanf(file, "%d", &current_data) != 1) {
-            break;
-        }
+    // Process each item in this thread's range
+    for (int i = data->start_index; i < data->end_index; i++) {
+        int current_item = data->items[i];
+        int best_bin = -1;
+        int min_remaining = data->capacity + 1;
         
-        int min = data->capacity + 1;
-        int bin_index = 0;
-        
-        // Find the best bin
+        // Find the best bin that can fit this item
         for (int j = 0; j < used_bins; j++) {
-            if (bin_capacity[j] >= current_data &&
-                bin_capacity[j] - current_data < min) {
-                bin_index = j;
-                min = bin_capacity[j] - current_data;
+            if (bin_capacity[j] >= current_item && 
+                bin_capacity[j] - current_item < min_remaining) {
+                best_bin = j;
+                min_remaining = bin_capacity[j] - current_item;
             }
         }
         
-        // No best bin exists - create new bin
-        if (min == data->capacity + 1) {
-            bin_capacity[used_bins] = data->capacity - current_data;
+        // If no bin can fit the item, create a new bin
+        if (best_bin == -1) {
+            bin_capacity[used_bins] = data->capacity - current_item;
             used_bins++;
         } else {
-            // Best bin is found, reduce remaining capacity
-            bin_capacity[bin_index] -= current_data;
-        }
-        
-        // If a bin has significant remaining capacity, save the info for later
-        for (int j = 0; j < used_bins; j++) {
-            if (bin_capacity[j] >= data->capacity / 2) {
-                remaining_items[remaining_count++] = data->capacity - bin_capacity[j];
-            }
+            // Add to the best bin
+            bin_capacity[best_bin] -= current_item;
         }
     }
     
-    fclose(file);
+    // Store the number of bins used by this thread
+    *(data->local_bins_used) = used_bins;
     
-    // Update the total number of bins safely
-    pthread_mutex_lock(&bin_mutex);
-    total_bins += used_bins;
-    pthread_mutex_unlock(&bin_mutex);
+    // Debug - print thread status
+    printf("Thread %d: Processed items %d to %d, used %d bins\n", 
+           data->thread_id, data->start_index, data->end_index - 1, used_bins);
     
-    // Write remaining items to separate file for this thread
-    writeRemainingItems(data->thread_id, remaining_items, remaining_count);
-    
-    free(remaining_items);
-    
-    data->bins_used = used_bins;
+    free(bin_capacity);
     pthread_exit(NULL);
 }
 
-void writeRemainingItems(int thread_id, int* remaining_items, int remaining_count) {
-    if (remaining_count == 0) {
-        return;
-    }
+int main() {
+    int items[ITEM_COUNT];
+    pthread_t threads[NUM_THREADS];
+    ThreadData thread_data[NUM_THREADS];
+    int local_bins_used[NUM_THREADS];
     
-    char filename[32];
-    sprintf(filename, "remaining_%d.txt", thread_id);
+    // Create test data
+    createData(ITEM_COUNT, BIN_CAPACITY);
     
-    FILE* file = fopen(filename, "w");
+    // Read all items from file
+    FILE* file = fopen("data.txt", "r");
     if (file == NULL) {
-        perror("Error opening remaining items file");
-        return;
+        perror("Error opening data file");
+        return 1;
     }
     
-    for (int i = 0; i < remaining_count; i++) {
-        fprintf(file, "%d\n", remaining_items[i]);
+    int count = 0;
+    while (count < ITEM_COUNT && fscanf(file, "%d", &items[count]) == 1) {
+        count++;
     }
-    
     fclose(file);
-}
-
-void finalBestFit(int capacity) {
-    FILE* output_file = fopen("combined_remaining.txt", "w");
-    if (output_file == NULL) {
-        perror("Error opening combined remaining file");
-        return;
-    }
     
-    // Combine all remaining items files
+    // Display items for verification
+    printf("Items to pack: ");
+    for (int i = 0; i < count; i++) {
+        printf("%d ", items[i]);
+    }
+    printf("\n");
+    
+    // Divide items among threads
+    int items_per_thread = count / NUM_THREADS;
+    int remaining_items = count % NUM_THREADS;
+    
+    int start_index = 0;
     for (int i = 0; i < NUM_THREADS; i++) {
-        char filename[32];
-        sprintf(filename, "remaining_%d.txt", i);
+        thread_data[i].thread_id = i;
+        thread_data[i].start_index = start_index;
         
-        FILE* input_file = fopen(filename, "r");
-        if (input_file == NULL) {
-            continue;  // Skip if file doesn't exist
-        }
+        // Distribute remaining items among first few threads
+        int extra = (i < remaining_items) ? 1 : 0;
+        int thread_items = items_per_thread + extra;
         
-        int item;
-        while (fscanf(input_file, "%d", &item) == 1) {
-            fprintf(output_file, "%d\n", item);
-        }
+        thread_data[i].end_index = start_index + thread_items;
+        thread_data[i].capacity = BIN_CAPACITY;
+        thread_data[i].items = items;
+        thread_data[i].local_bins_used = &local_bins_used[i];
         
-        fclose(input_file);
-        remove(filename);  // Clean up individual files
+        start_index += thread_items;
     }
     
-    fclose(output_file);
-    
-    // Now perform final best fit on the combined remaining items
-    int remaining_count = 0;
-    int* remaining_items = NULL;
-    
-    FILE* count_file = fopen("combined_remaining.txt", "r");
-    if (count_file != NULL) {
-        int item;
-        while (fscanf(count_file, "%d", &item) == 1) {
-            remaining_count++;
-        }
-        fclose(count_file);
-        
-        if (remaining_count > 0) {
-            remaining_items = malloc(remaining_count * sizeof(int));
-            
-            FILE* data_file = fopen("combined_remaining.txt", "r");
-            if (data_file != NULL) {
-                for (int i = 0; i < remaining_count; i++) {
-                    fscanf(data_file, "%d", &remaining_items[i]);
-                }
-                fclose(data_file);
-            }
-            
-            // Apply best fit to remaining items
-            int bin_capacity[remaining_count];
-            int used_bins = 0;
-            
-            for (int i = 0; i < remaining_count; i++) {
-                int current_data = remaining_items[i];
-                int min = capacity + 1;
-                int bin_index = 0;
-                
-                // Find the best bin
-                for (int j = 0; j < used_bins; j++) {
-                    if (bin_capacity[j] >= current_data &&
-                        bin_capacity[j] - current_data < min) {
-                        bin_index = j;
-                        min = bin_capacity[j] - current_data;
-                    }
-                }
-                
-                // No best bin exists
-                if (min == capacity + 1) {
-                    bin_capacity[used_bins] = capacity - current_data;
-                    used_bins++;
-                } else {
-                    // Best bin is found, reduce remaining capacity
-                    bin_capacity[bin_index] -= current_data;
-                }
-            }
-            
-            // Update total bins
-            total_bins += used_bins;
-            
-            free(remaining_items);
+    // Create threads
+    for (int i = 0; i < NUM_THREADS; i++) {
+        if (pthread_create(&threads[i], NULL, bestFitThread, (void*)&thread_data[i]) != 0) {
+            perror("Failed to create thread");
+            return 1;
         }
     }
     
-    remove("combined_remaining.txt");  // Clean up
+    // Wait for all threads to complete
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    
+    // Sum up the bins used by each thread
+    total_bins = 0;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        total_bins += local_bins_used[i];
+    }
+    
+    printf("Number of total_bins required in Multi-threaded Best Fit: %d\n", total_bins);
+    
+    pthread_mutex_destroy(&bin_mutex);
+    return 0;
 }
