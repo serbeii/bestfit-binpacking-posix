@@ -4,7 +4,6 @@
 #include <time.h>
 
 #define BIN_CAPACITY 10
-#define ITEM_COUNT 1000000
 #define DEBUG 0
 
 typedef struct {
@@ -17,30 +16,36 @@ typedef struct {
 } ThreadData;
 
 static int total_bins = 0;
-pthread_mutex_t bin_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void createData(int size, int capacity);
 void* bestFitThread(void* arg);
 
 int main(int argc, char** argv) {
-    int items[ITEM_COUNT];
+    struct timespec start, end;
     int thread_count;
-    if (argc < 2) {
+    int item_count;
+    if (argc == 2) {
         perror(
             "You have not entered a thread count, running in a single thread");
         thread_count = 1;
-    } else if (argc == 2) {
-        thread_count = atoi(argv[1]);
-        printf("Starting with %d threads\n", thread_count);
+        item_count = atoi(argv[1]);
+    } else if (argc == 3) {
+        item_count = atoi(argv[1]);
+        thread_count = atoi(argv[2]);
+        printf("Packing %d items with %d threads\n", item_count, thread_count);
     } else {
         perror("Error with the command line arguments");
     }
+    int items[item_count];
     pthread_t threads[thread_count];
     ThreadData thread_data[thread_count];
     int local_bins_used[thread_count];
 
     // Create test data
-    createData(ITEM_COUNT, BIN_CAPACITY);
+    createData(item_count, BIN_CAPACITY);
+
+    // Start timer
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     // Read all items from file
     FILE* file = fopen("data.txt", "r");
@@ -50,7 +55,7 @@ int main(int argc, char** argv) {
     }
 
     int count = 0;
-    while (count < ITEM_COUNT && fscanf(file, "%d", &items[count]) == 1) {
+    while (count < item_count && fscanf(file, "%d", &items[count]) == 1) {
         count++;
     }
     fclose(file);
@@ -107,7 +112,11 @@ int main(int argc, char** argv) {
     printf("Number of total_bins required in Multi-threaded Best Fit: %d\n",
            total_bins);
 
-    pthread_mutex_destroy(&bin_mutex);
+    clock_gettime(CLOCK_MONOTONIC, &end);  // End timing
+    double total_time = (end.tv_sec - start.tv_sec) +
+                        (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Total time it took to calculate: %.2f seconds\n", total_time);
+
     return 0;
 }
 
@@ -127,6 +136,8 @@ void createData(int size, int capacity) {
 }
 
 void* bestFitThread(void* arg) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     ThreadData* data = (ThreadData*)arg;
     int size = data->end_index - data->start_index;
 
@@ -167,9 +178,14 @@ void* bestFitThread(void* arg) {
     // Store the number of bins used by this thread
     *(data->local_bins_used) = used_bins;
 
+    clock_gettime(CLOCK_MONOTONIC, &end);  // End timing
+    double total_time = (end.tv_sec - start.tv_sec) +
+                        (end.tv_nsec - start.tv_nsec) / 1000000000.0;
     // Debug - print thread status
-    printf("Thread %d: Processed items %d to %d, used %d bins\n",
-           data->thread_id, data->start_index, data->end_index - 1, used_bins);
+    printf(
+        "Thread %d: Processed items %d to %d in %.2f seconds, used %d bins\n",
+        data->thread_id, data->start_index, data->end_index - 1, total_time,
+        used_bins);
 
     free(bin_capacity);
     pthread_exit(NULL);
