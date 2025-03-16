@@ -3,7 +3,7 @@
 #include <time.h>
 
 #define BIN_CAPACITY 10
-#define ITEM_COUNT 500
+#define ITEM_COUNT 1000000
 
 static int total_bins = 0;
 
@@ -11,7 +11,7 @@ void bestFit(int start_index, int size, int capacity);
 void createData(int size, int capacity);
 
 int main() {
-    createData(ITEM_COUNT, BIN_CAPACITY);
+    //createData(ITEM_COUNT, BIN_CAPACITY);
     bestFit(0, ITEM_COUNT, BIN_CAPACITY);
     printf("Number of total_bins required in Best Fit: %d\n", total_bins);
 }
